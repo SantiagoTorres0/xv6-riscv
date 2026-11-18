@@ -351,7 +351,15 @@ Reglas de interacción:
 ```
 
 ### 4.3 Descripción Revisada y Coherente de MLFQ para XV6
-* [Redactar la versión refinada del algoritmo tras la interacción socrática, definiendo la variante específica y los parámetros propuestos].
+* MLFQ es un planificador de procesos, el cuál tiene 3 colas de funcionamiento 0, 1 y 2, cada cola representa un nivel de prioridad de un proceso, cada proceso que entra se le asgina en la cola 2, de mayor prioridad, los procesos de la misma prioridad se ejecutan en orden de llegada, cada vez que el manager ejecuta todos los procesos de una cola pasa a la siguiente, cada proceso tiene maximo un quantum para ejecutarse, si al terminar ese quantum su ejecución no está terminada, pasa a la siguiente cola, hay un tiempo maximo S en el que todos los procesos suben a la cola de mayor prioridad, de esta forma los procesos de menor prioridad no se quedan esperando para siempre una nueva oportunidad de tener quantum para seguir con su ejecución, si un proceso libera la cpu antes de agotar el quantum (como esperar una entrada del teclado), no pierde prioridad, puede ser una puerta para procesos maliciosos que realenticen la ejecucion general de procesos en la cp, siempre se ejecuta el proceso con mayor prioridad, si esta ejecutando un proceso de una cola de menor prioridad, en cuanto dicho proceso agote su quantum, el planificador regresará a la cola de mayor prioridad.
+Regla 1: Si Prioridad(A) > Prioridad(B), corre A (no corre B).
+Regla 2: Si Prioridad(A) == Prioridad(B), corren en Round Robin (se turnan por orden de llegada usando el quantum asignado a esa cola).
+
+Regla 3: Qué pasa cuando un proceso llega por primera vez ("cada proceso nuevo que entra al sistema lo hace con la prioridad más alta") 
+Regla 4:
+4a: Si un proceso agota su quantum (asignación de tiempo) mientras está ejecutándose, su prioridad se reduce (baja una cola).
+4b: Si un proceso cede la CPU antes de agotar su quantum (por ejemplo, al esperar E/S con sleep()), mantiene su mismo nivel de prioridad. (Nota importante para su investigación más adelante: en la versión básica de MLFQ esto funciona bien, aunque abre la puerta a que un proceso malicioso haga E/S justo antes de acabar el quantum para "engañar" al planificador; eso es algo genial para dejar anotado en sus cuestiones pendientes o refinamientos).
+Regla 5: después de un período de tiempo S, todos los procesos del sistema (sin importar en qué cola estén) se mueven de vuelta a la cola de mayor prioridad (la Cola 2). 
 
 ### 4.4 Propuesta de Cambios Necesarios en XV6
 
@@ -372,28 +380,42 @@ Reglas de interacción:
    * **Necesidad que atiende y justificación:** Reemplaza el recorrido lineal plano actual de `scheduler()` sobre `proc[NPROC]`, evitando el sesgo de favorecer siempre los primeros índices del arreglo. Además, separar la señalización del *boost* (bandera en `clockintr()`) de su ejecución (`scheduler()`) evita adquirir múltiples `p->lock` dentro de una interrupción de hardware bajo `tickslock`, previniendo *deadlocks* y eliminando la inanición (*starvation*) en las colas bajas.
 
 ### 4.5 Decisiones Pendientes de Investigación o Soporte Adicional
-* [Listar aspectos técnicos que requerirían validación experimental o investigación adicional antes de implementar, como sincronización con *spinlocks* (`p->lock`), elección óptima del periodo $S$ para evitar inanición sin degradar la interactividad, y manejo de procesos que hacen *sleep* frecuente].
+Antes de llevar esta propuesta a una implementación definitiva en XV6, quedan abiertas las siguientes decisiones técnicas que requieren experimentación y soporte adicional[cite: 3]:
+
+* **Valor óptimo del periodo $S$ (*Priority Boost*):** Determinar cada cuántos *ticks* o milisegundos debe ejecutarse el reinicio global de prioridades (Regla 5) para evitar la inanición de procesos intensivos en CPU sin degradar la capacidad de respuesta de las tareas interactivas.
+* **Valores óptimos de *quantum* por cola:** Calibrar la duración del *time slice* (y el *allotment*) en cada nivel de prioridad (por ejemplo, 10 ms en Cola 2, 20 ms en Cola 1 y 40 ms en Cola 0) según la carga de trabajo real en XV6.
+* **Prevención de abuso (*Gaming the Scheduler*):** Evitar que procesos maliciosos cedan voluntariamente la CPU justo antes de agotar su *quantum* para conservar la prioridad más alta; para ello se requiere llevar un contador acumulado de tiempo consumido dentro del nivel actual (Regla 4 refinada) en lugar de reiniciar el contador en cada cesión voluntaria.
+* **Escalabilidad en entornos multiprocesador (múltiples CPUs):** Evaluar cómo adaptar el diseño cuando `CPUS > 1`, comparando entre mantener colas globales compartidas (protegidas con candados) o asignar grupos de colas independientes por cada núcleo de CPU.
 
 ### 4.6 Escenarios de Comprobación Teórica
-*(Descripción conceptual sin programación ni ejecución)*
+#### Escenario 1: Diferenciación entre procesos interactivos (E/S) e intensivos en CPU
 
-* **Escenario 1 (Regla 3 y Regla 4 - Degradación de procesos CPU-bound):**
-  * **Procesos participantes:** [Describir].
-  * **Acciones de los procesos:** [Describir].
-  * **Regla que comprueba:** [Describir].
-  * **Comportamiento esperado:** [Describir].
-* **Escenario 2 (Regla 1 y Regla 2 - Prioridad de procesos interactivos I/O-bound frente a CPU-bound):**
-  * **Procesos participantes:** [Describir].
-  * **Acciones de los procesos:** [Describir].
-  * **Regla que comprueba:** [Describir].
-  * **Comportamiento esperado:** [Describir].
-* **Escenario 3 (Regla 5 - *Priority Boost* y prevención de inanición):**
-  * **Procesos participantes:** [Describir].
-  * **Acciones de los procesos:** [Describir].
-  * **Regla que comprueba:** [Describir].
-  * **Comportamiento esperado:** [Describir].
+* **Reglas a comprobar:** **Regla 3** (todo proceso nuevo ingresa en la cola de mayor prioridad, Cola 2) y **Regla 4** (un proceso que agota su *quantum* baja de prioridad hacia Cola 1/Cola 0, mientras que uno que cede la CPU por E/S antes de agotarlo conserva su nivel en Cola 2)[cite: 3].
+* **Procesos participantes y acciones:**
+  1. **Proceso interactivo (Consola / `sh`):** Llega en $t = 0\text{ ms}$, imprime el carácter `$` para indicar que espera entrada del usuario y cede voluntariamente la CPU (pasando a estado `SLEEPING`) antes de agotar su *quantum* de 10 ms[cite: 3].
+  2. **Proceso intensivo en CPU (Cálculo matemático):** Llega en $t = 1\text{ ms}$ y ejecuta un bucle de cómputo continuo que requiere **20 ms** totales de procesador sin realizar operaciones de entrada/salida[cite: 3].
+* **Comportamiento esperado:**
+  * Ambos procesos ingresan inicialmente en la **Cola 2** (mayor prioridad)[cite: 3].
+  * En $t = 0\text{ ms}$, la consola realiza su operación de E/S y libera la CPU antes de consumir los 10 ms, por lo que conserva su ubicación en la **Cola 2**[cite: 3].
+  * A partir de $t = 1\text{ ms}$, el proceso de cálculo entra a ejecutarse durante 10 ms seguidos; al agotar completamente su *quantum* en $t = 11\text{ ms}$ sin haber terminado (aún le restan 10 ms), el planificador lo degrada a la **Cola 1**[cite: 3]. Si la consola recibe entrada del usuario nuevamente, tendrá prioridad inmediata sobre el proceso de cálculo[cite: 3].
 
----
+#### Escenario 2: Prevención de inanición mediante *Priority Boost*
+
+* **Reglas a comprobar:** **Regla 1** (prioridad estricta entre colas), **Regla 2** (*Round Robin* dentro de una misma cola), **Regla 4** (degradación al agotar el *quantum*) y **Regla 5** (*Priority Boost* tras cumplirse el periodo $S$)
+* **Parámetros de referencia:** 3 colas de prioridad (Cola 2 = alta con *quantum* de 10 ms; Cola 1 = media con *quantum* de 20 ms; Cola 0 = baja con *quantum* de 40 ms) y periodo de *Priority Boost* $S = 30\text{ ms}$.
+* **Procesos participantes y acciones:**
+  1. **Proceso A (intensivo en CPU):** Llega en $t = 0\text{ ms}$, requiere **20 ms** de CPU en total
+  2. **Proceso B (corto):** Llega en $t = 1\text{ ms}$, requiere **10 ms** de CPU
+  3. **Proceso C (corto):** Llega en $t = 15\text{ ms}$, requiere **10 ms** de CPU
+  4. **Proceso D (corto):** Llega en $t = 29\text{ ms}$, requiere **10 ms** de CPU
+* **Línea de tiempo paso a paso:**
+  * **0–10 ms:** Entra **A** en la Cola 2. Consume los 10 ms de su *quantum*, le quedan 10 ms pendientes y es degradado a la **Cola 1** (Regla 4)
+  * **10–20 ms:** **B** está listo en la Cola 2 (mayor prioridad que A en la Cola 1, Regla 1). Ejecuta sus 10 ms completos y termina en el ms 20
+  * **20–30 ms:** **C** ya había llegado en el ms 15 a la Cola 2, por lo que tiene mayor prioridad que A. Ejecuta sus 10 ms completos y termina en el ms 30. Durante todo el intervalo de 10 ms a 30 ms (20 ms en total), **A** permaneció esperando sin CPU en la Cola 1
+  * **En el ms 30 (se cumple $S = 30\text{ ms}$):** Justo en $t = 29\text{ ms}$ llegó **D** a la Cola 2. Sin el *Priority Boost*, **D** (Cola 2) volvería a desplazar a **A** (Cola 1). Sin embargo, al cumplirse $S = 30\text{ ms}$, la **Regla 5** sube a **A** nuevamente a la **Cola 2** y reinicia su tiempo consumido en ese nivel
+  * **30–40 ms:** Como **A** y **D** ahora comparten la **Cola 2** con igual prioridad, se aplica *Round Robin* (Regla 2). Al haber sido promovido en el *boost*, **A** toma su turno, ejecuta sus 10 ms restantes y termina en el ms 40
+  * **40–50 ms:** Finalmente corre **D** en la Cola 2 durante sus 10 ms y termina en el ms 50
+* **Comportamiento esperado:** Verificar que, al alcanzarse el umbral de tiempo $S$ (contabilizado mediante los *ticks* del reloj del sistema), cualquier proceso degradado en colas inferiores es promovido a la cola de máxima prioridad y su contador de consumo en el nivel se reinicia, garantizando que los procesos intensivos en CPU avancen periódicamente sin sufrir inanición
 
 ## 5. Evidencia del Aprendizaje con IA y Conclusiones
 
@@ -419,8 +441,8 @@ Reglas de interacción:
 
 ### 5.4 Reflexiones Individuales
 
-* **Reflexión de Santiago [Apellido]:**
-  > [Escribir un párrafo individual indicando qué comprendió, qué aportó al trabajo y qué cuestión aún necesita estudiar].
+* **Reflexión de Santiago Torres:**
+El algoritmo MLFQ representa una evolución frente al planificador *Round Robin* simple que trae XV6 por defecto, ya que permite clasificar dinámicamente los procesos según su comportamiento sin necesidad de conocer de antemano cuánto tiempo tardarán en ejecutarse, favoreciendo la rapidez de respuesta en tareas interactivas sin bloquear por completo los trabajos largos, No obstante, su incorporación efectiva en XV6 requiere calibrar cuidadosamente parámetros críticos como la duración de los *quantums* por nivel, el periodo $S$ para el *Priority Boost* y un mecanismo de contabilidad acumulada de tiempo por nivel que impida que procesos maliciosos abusen de la conservación de prioridad al soltar voluntariamente la CPU antes de vencer su *quantum*, en cuanto a lo que aporte a este trabajo, principalmente en el tema de la puesta en marcha del sistema operativo y la parte teorica de como funciona MLFQ, siendo lissete quien más se empapo del código fuente de xv6 
 
 * **Reflexión de [Nombre del Compañero]:**
   > [Escribir un párrafo individual indicando qué comprendió, qué aportó al trabajo y qué cuestión aún necesita estudiar].
