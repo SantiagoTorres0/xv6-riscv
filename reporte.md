@@ -104,33 +104,209 @@ make qemu CPUS=1
 
 ## 3. Investigación del Planificador Original de XV6
 
-*(Sección a completar con el análisis del Integrante B)*
-
 ### 3.1 Algoritmo o Política de Planificación por Defecto
-* **Explicación en palabras propias:** [Explicar aquí la política Round-Robin sin prioridades ni envejecimiento que utiliza XV6 por defecto y cómo se evidencia en el comportamiento del sistema].
-* **Evidencia:** [Incluir explicación o prueba de comportamiento observada].
+
+XV6 utiliza por defecto el algoritmo de planificación **Round Robin (RR)** sin prioridades. En esta política, todos los procesos listos para ejecutarse tienen la misma jerarquía y reciben turnos iguales de procesador (*quantum*). Cuando un proceso consume su intervalo de tiempo o debe esperar una operación, el sistema le retira la CPU y la asigna al siguiente proceso disponible de forma cíclica, evitando que una sola tarea acapare el procesador indefinidamente.
+
+**Respaldo en el código fuente:**
+Esta política se verifica directamente en la implementación del núcleo:
+* En **`kernel/proc.h`**, ni `enum procstate` (línea **79**) ni `struct proc` (líneas **82–105**) definen atributos de prioridad, niveles de cola ni contadores de consumo acumulado de CPU.
+* En **`kernel/proc.c`** (líneas **428–470**, `scheduler()`), el planificador recorre linealmente el arreglo global `proc[NPROC]` y selecciona el siguiente proceso en estado `RUNNABLE` sin aplicar ningún criterio de ordenamiento o peso.
+* En **`kernel/start.c`** (líneas **55–66**, `timerinit()`), se habilita la extensión `Sstc` y se configura el temporizador hardware sumando un intervalo fijo de `1000000` ciclos (`w_stimecmp(r_time() + 1000000);` en la línea **65**, equivalente a ~0,1 s en QEMU, valor recargado luego en cada interrupción por `clockintr()` en `kernel/trap.c`). Cada vez que vence ese intervalo, `usertrap()` y `kerneltrap()` (**`kernel/trap.c`**, líneas **85–86** y **157–158**) invocan `yield()` (**`kernel/proc.c`**, líneas **500–508**), devolviendo el proceso activo a estado `RUNNABLE`.
+
+**Evidencia en el comportamiento del sistema:**
+Para observar el planificador bajo competencia por un único núcleo, primero se arrancó XV6 configurado con una sola CPU virtual (`make qemu CPUS=1`):
+
+![Arranque de XV6 con una sola CPU virtual](img/evidencia-arranque-1-cpu.png)
+
+Sobre esa misma ejecución con `CPUS=1`, se ejecutó el programa concurrente **`stressfs`** (`user/stressfs.c`), el cual crea 5 procesos concurrentes mediante un bucle de `fork()` (índices `0` al `4`) donde cada proceso imprime `write <índice>`, realiza 20 escrituras en disco y finalmente imprime `read` antes de leer el archivo:
+
+![Evidencia de ejecución concurrente con stressfs en XV6](img/evidencia-round-robin.png)
+
+**Análisis de lo observado y alcance de la prueba:**
+* **Concurrencia sin prioridades fijas en 1 CPU:** En la consola se observa que los cinco procesos ejecutan su impresión inicial de escritura (`write 0` a `write 4`) antes de que cualquiera complete sus 20 bloques de escritura y pase a la fase de lectura (`read`). Esto demuestra que ningún proceso tiene prioridad estática para monopolizar el sistema hasta terminar todo su ciclo de trabajo; a medida que un proceso cede la CPU, `scheduler()` avanza sobre `proc[NPROC]` y da paso a los demás.
+* **Orden de aparición (`0` a `4` y líneas `read`):** El orden ascendente `write 0` a `write 4` responde tanto a la lógica de creación en `user/stressfs.c` (cada proceso padre hace `fork()`, rompe el bucle e imprime inmediatamente su índice `i` antes de iniciar el ciclo pesado de escrituras) como al orden secuencial en que quedan ubicados dentro de `proc[NPROC]`. En la fase posterior, las cinco líneas `read` no incluyen el índice del proceso en el código fuente original (`printf("read\n")`), por lo que no permiten distinguir el orden exacto en que cada proceso finalizó su escritura.
+* **Alcance frente a expropiación por reloj vs. bloqueos por E/S:** Dado que `stressfs` realiza operaciones intensivas de disco, cada escritura invoca `sleep()` y cede la CPU voluntariamente mientras espera la interrupción del controlador VirtIO. En consecuencia, esta evidencia es **compatible** con Round Robin y demuestra la rotación efectiva de procesos sobre `CPUS=1`, pero por sí sola no aísla la expropiación pura por interrupción de temporizador (`yield()`) de las cesiones voluntarias por E/S (para observar únicamente la expropiación por *quantum* sin bloqueos de disco sería necesario un programa estrictamente intensivo en cálculo de CPU).
 
 ### 3.2 Archivo y Función de Selección del Siguiente Proceso
-* **Archivo y función:** `kernel/proc.c` — función `scheduler(void)`.
-* **Explicación y fragmento de código:**
-  ```c
-  // Pegar aquí el fragmento relevante de scheduler() en kernel/proc.c
-  ```
+
+* **Archivo y función:** `kernel/proc.c` – función `scheduler(void)` (líneas **428–470**).
+* **Explicación:** Cada núcleo de CPU ejecuta su propio bucle infinito dentro de `scheduler()`. En cada iteración habilita y deshabilita brevemente las interrupciones para evitar interbloqueos cuando todos los procesos están dormidos, y luego recorre linealmente la tabla global de procesos `proc[NPROC]` mediante un puntero `p`. Para cada entrada adquiere su cerrojo (`acquire(&p->lock)`) y evalúa si `p->state == RUNNABLE`. Al encontrar el primer proceso listo, cambia su estado a `RUNNING`, lo asigna a la estructura de la CPU actual (`c->proc = p`) y transfiere el contexto de ejecución mediante `swtch(&c->context, &p->context)`. Cuando el proceso cede o pierde la CPU y regresa a `scheduler()`, el planificador limpia `c->proc = 0`, libera el cerrojo y continúa avanzando hacia el siguiente índice del arreglo. Si recorre toda la tabla sin hallar procesos ejecutables (`found == 0`), ejecuta la instrucción RISC-V `wfi` (*Wait For Interrupt*) para suspender el núcleo hasta la próxima interrupción.
+
+**Fragmento de código (`kernel/proc.c`, líneas 428–470):**
+```c
+void
+scheduler(void)
+{
+  struct proc *p;
+  struct cpu *c = mycpu();
+
+  c->proc = 0;
+  for(;;){
+    // The most recent process to run may have had interrupts
+    // turned off; enable them to avoid a deadlock since all
+    // processes are waiting. Then turn them back off
+    // to avoid a recent race between an interrupt and wfi,
+    // where a process wfi'd before receiving an interrupt.
+    intr_on();
+    intr_off();
+
+    int found = 0;
+    for(p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if(p->state == RUNNABLE) {
+        // Switch to chosen process.  It is the process's job
+        // to release its lock and then reacquire it
+        // before jumping back to us.
+        p->state = RUNNING;
+        c->proc = p;
+        swtch(&c->context, &p->context);
+
+        // Process is done running for now.
+        // It should have changed its p->state before coming back.
+        c->proc = 0;
+        found = 1;
+      }
+      release(&p->lock);
+    }
+    if(found == 0) {
+      // nothing to run; stop running on this core until an interrupt can wake something up.
+      asm volatile("wfi");
+    }
+  }
+}
+```
 
 ### 3.3 Relación con los Estados de los Procesos y Eventos de Cambio de Contexto
-* **Estados de proceso (`kernel/proc.h`):** Explicar `enum procstate` (`UNUSED`, `USED`, `SLEEPING`, `RUNNABLE`, `RUNNING`, `ZOMBIE`) y los campos relevantes de `struct proc`.
-* **Eventos que ceden o recuperan la CPU (`kernel/proc.c` y `kernel/trap.c`):** Explicar el ciclo entre `usertrap()`/`kerneltrap()` (interrupción de temporizador), `yield()`, `sched()` y `swtch()`.
-* **Fragmentos de código de respaldo:**
-  ```c
-  // Pegar aquí los fragmentos relevantes de kernel/proc.h, kernel/proc.c y kernel/trap.c
-  ```
 
-### 3.4 Incorporación del Planificador durante la Compilación y Construcción
-* **Proceso de construcción (`Makefile`):** Explicar cómo `kernel/proc.c` y `kernel/trap.c` son compilados a archivos objeto (`kernel/proc.o`, `kernel/trap.o` listados en la variable `OBJS`) y enlazados mediante `riscv64-linux-gnu-ld` usando `kernel/kernel.ld` para generar el binario final `kernel/kernel`.
-* **Fragmento del `Makefile`:**
-  ```makefile
-  # Pegar aquí el fragmento de OBJS y la regla de construcción de $K/kernel del Makefile
-  ```
+* **Estados de proceso (`kernel/proc.h`, línea 79 y `struct proc`, líneas 82–105):** El ciclo de vida de cada proceso se modela mediante `enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE }`, almacenado en `p->state`:
+  * `UNUSED` / `USED`: Ranura libre en `proc[NPROC]` o recién reservada por `allocproc()` durante la creación (`fork()`).
+  * `RUNNABLE`: El proceso está listo para ejecutarse y espera turno en la cola implícita `proc[NPROC]`.
+  * `RUNNING`: El proceso tiene asignada una CPU y está ejecutando instrucciones actualmente (`c->proc == p`).
+  * `SLEEPING`: El proceso está bloqueado esperando un evento o canal (`p->chan`), como una operación de disco o lectura de consola, mediante `sleep()`.
+  * `ZOMBIE`: El proceso finalizó con `exit()`, pero conserva su entrada hasta que su proceso padre ejecute `wait()`.
+  * Adicionalmente, `struct proc` almacena `p->lock` (exclusión mutua sobre su estado), `p->kstack` (pila de kernel independiente) y `p->context` (`struct context`, donde se guardan los registros *callee-saved* durante el cambio de contexto).
+
+* **Eventos que ceden o recuperan la CPU (`kernel/trap.c`, `kernel/proc.c` y `kernel/swtch.S`):**
+  1. **Expropiación por interrupción de temporizador:** Cuando vence el intervalo de reloj, el hardware genera una interrupción atendida en `usertrap()` (**`kernel/trap.c`**, líneas **85–86**) o `kerneltrap()` (**`kernel/trap.c`**, líneas **157–158**). Al detectar `which_dev == 2`, ambas funciones invocan `yield()`.
+  2. **Transición `RUNNING` → `RUNNABLE` (`yield()`, `kernel/proc.c`, líneas 500–508):** `yield()` adquiere `p->lock`, cambia `p->state` de `RUNNING` a `RUNNABLE` y llama a `sched()`. (De forma análoga, si el proceso se bloquea por E/S, `sleep()` cambia su estado a `SLEEPING` y llama a `sched()`, volviendo luego a `RUNNABLE` cuando `wakeup()` despierta su canal).
+  3. **Validación y salto al planificador (`sched()`, `kernel/proc.c`, líneas 479–497):** `sched()` verifica las invariantes del núcleo (cerrojo `p->lock` adquirido, profundidad de bloqueos `noff == 1`, estado distinto de `RUNNING` e interrupciones deshabilitadas) e invoca `swtch(&p->context, &mycpu()->context)`.
+  4. **Cambio de contexto a nivel de registros (`swtch()`, `kernel/swtch.S`, líneas 1–42):** La rutina en ensamblador `swtch(old, new)` guarda los registros *callee-saved* (`ra`, `sp`, `s0`–`s11`) del proceso saliente en `p->context` y carga los de `c->context`. Al ejecutarse `ret`, la CPU retoma exactamente la instrucción siguiente a `swtch()` dentro de `scheduler()`, donde se libera `p->lock` y se selecciona el siguiente proceso `RUNNABLE`.
+
+**Fragmentos de respaldo (`kernel/proc.h`, `kernel/proc.c` y `kernel/swtch.S`):**
+```c
+// kernel/proc.h (línea 79)
+enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
+
+// kernel/proc.c - yield() (líneas 500–508)
+void
+yield(void)
+{
+  struct proc *p = myproc();
+  acquire(&p->lock);
+  p->state = RUNNABLE;
+  sched();
+  release(&p->lock);
+}
+
+// kernel/proc.c - sched() (líneas 479–497)
+void
+sched(void)
+{
+  int intena;
+  struct proc *p = myproc();
+
+  if(!holding(&p->lock))
+    panic("sched p->lock");
+  if(mycpu()->noff != 1)
+    panic("sched locks");
+  if(p->state == RUNNING)
+    panic("sched RUNNING");
+  if(intr_get())
+    panic("sched interruptible");
+
+  intena = mycpu()->intena;
+  swtch(&p->context, &mycpu()->context);
+  mycpu()->intena = intena;
+}
+```
+
+```asm
+# kernel/swtch.S (líneas 1–42)
+.globl swtch
+swtch:
+        sd ra, 0(a0)
+        sd sp, 8(a0)
+        sd s0, 16(a0)
+        ...
+        sd s11, 104(a0)
+
+        ld ra, 0(a1)
+        ld sp, 8(a1)
+        ld s0, 16(a1)
+        ...
+        ld s11, 104(a1)
+
+        ret
+```
+
+### 3.4 Incorporación del Planificador en la Compilación y Construcción de XV6
+
+La construcción del kernel de XV6 está automatizada en el archivo **`Makefile`** de la raíz del proyecto, utilizando la cadena de herramientas cruzada para arquitectura RISC-V (`riscv64-linux-gnu-` o `riscv64-unknown-elf-`). A partir de las reglas definidas en dicho archivo (y verificable en la salida de consola al ejecutar `make`), el proceso transforma los archivos fuente del planificador y manejo de interrupciones (`kernel/proc.c`, `kernel/trap.c` y `kernel/swtch.S`) en código máquina enlazado dentro del binario final **`kernel/kernel`**:
+
+1. **Declaración de objetos del kernel (`OBJS`, líneas 1–2 y 4–31):** En el `Makefile`, la variable `K=kernel` define el directorio del núcleo y la lista `OBJS` registra todos los archivos objeto que formarán parte del sistema operativo, incluyendo explícitamente `$K/proc.o` (línea 15), `$K/swtch.o` (línea 16) y `$K/trap.o` (línea 18).
+2. **Compilación y ensamblado individual (`.c` y `.S` → `.o`, líneas 58–82 y 99–100):**
+   * Los archivos en C (`kernel/proc.c` y `kernel/trap.c`) se compilan mediante la regla implícita de GNU Make usando `CC = $(TOOLPREFIX)gcc` (línea 58) con las banderas `CFLAGS` (líneas 66–82), entre las que destacan `-march=rv64gc`, `-ffreestanding` y `-nostdlib`, necesarias porque el kernel se ejecuta sin sistema operativo subyacente ni biblioteca estándar.
+   * El archivo en ensamblador `kernel/swtch.S` se ensambla mediante la regla explícita `$K/%.o: $K/%.S` (líneas 99–100) hacia `kernel/swtch.o`.
+3. **Enlazado en el binario del kernel (`$K/kernel`, líneas 59–61 y 94–97):** La regla `$K/kernel: $(OBJS) $K/kernel.ld` invoca al enlazador `LD = $(TOOLPREFIX)ld` (línea 59) junto con el script de enlazado `kernel/kernel.ld` (que define la disposición en memoria de las secciones del núcleo). De este modo, el código de `scheduler()`, `sched()`, `yield()`, `usertrap()` y `swtch()` queda empaquetado dentro del ejecutable ELF `kernel/kernel`. Adicionalmente, `OBJDUMP` (línea 61) genera el desensamblado (`kernel/kernel.asm`) y la tabla de símbolos (`kernel/kernel.sym`).
+4. **Configuración de CPU y carga en QEMU (líneas 174–184):** Finalmente, el objetivo `qemu` depende de `$K/kernel` y de la imagen de disco `fs.img`, pasando `-kernel $K/kernel` y `-smp $(CPUS)` dentro de `QEMUOPTS` para arrancar el núcleo compilado en `qemu-system-riscv64`. Por defecto `CPUS` vale `3` (líneas 174–176); para este trabajo se ejecuta `make qemu CPUS=1`, que sobrescribe ese valor y hace que QEMU arranque con una sola CPU virtual, cumpliendo el requisito de la sección 2 y permitiendo observar la rotación de procesos descrita en la pregunta **3.1**.
+
+**Fragmento de respaldo (`Makefile`, líneas 1–2, 4–18, 58–73, 94–100 y 174–184):**
+```make
+K=kernel
+U=user
+
+OBJS = \
+  ...
+  $K/main.o \
+  $K/vm.o \
+  $K/proc.o \
+  $K/swtch.o \
+  $K/trampoline.o \
+  $K/trap.o \
+  ...
+
+CC = $(TOOLPREFIX)gcc
+LD = $(TOOLPREFIX)ld
+OBJCOPY = $(TOOLPREFIX)objcopy
+OBJDUMP = $(TOOLPREFIX)objdump
+
+CFLAGS = -Wall -Werror -Wno-unknown-attributes -O -fno-omit-frame-pointer -ggdb -gdwarf-2
+CFLAGS += $(DETFLAGS)
+CFLAGS += -march=rv64gc
+CFLAGS += -std=gnu99
+CFLAGS += -MD
+CFLAGS += -mcmodel=medany
+CFLAGS += -ffreestanding
+CFLAGS += -fno-common -nostdlib
+...
+
+$K/kernel: $(OBJS)$K/kernel.ld
+	$(LD)$(LDFLAGS) -T $K/kernel.ld -o$K/kernel $(OBJS)$(OBJDUMP) -S $K/kernel >$K/kernel.asm
+	$(OBJDUMP) -t $K/kernel \vert{} sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $K/kernel.sym
+
+$K/\%.o:$K/%.S
+	$(CC) -march=rv64gc -g$(DETFLAGS) -c -o $@ $<
+...
+ifndef CPUS
+CPUS := 3
+endif
+
+QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp$(CPUS) -nographic
+...
+qemu: check-qemu-version $K/kernel fs.img
+	$(QEMU)$(QEMUOPTS)
+```
 
 ---
 
