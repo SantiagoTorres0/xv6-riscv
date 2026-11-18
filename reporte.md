@@ -347,36 +347,53 @@ Reglas de interacción:
 3. Pídenos que propongamos y justifiquemos las decisiones que faltan. Después, ayúdanos a comprobarlas con ejemplos pequeños de procesos y decisiones de planificación que nosotros debamos resolver.
 4. Guíanos para relacionar cada regla con XV6. Antes de sugerir una modificación, pregúntanos qué comportamiento necesitamos y qué evidencia del código respalda nuestra propuesta.
 5. No supongas que tienes acceso a nuestro repositorio. Pide los fragmentos necesarios y distingue lo observado de lo que todavía sea una hipótesis. No inventes archivos, funciones o comportamientos de nuestra versión.
-6. No entregues código de implementación, ni escribas parches completos; enfócate únicamente en el diseño conceptual y su justificación.
+6. No entregues código de implementación,  parches, una lista cerrada de archivos por modificar ni pseudocódigo que resuelva el planificador. Revisa nuestras propuestas y señala problemas mediante preguntas y pistas graduales. Puedes explicar conceptos previos con ejemplos mínimos.
+Si nos bloqueamos, reduce la dificultad de la pregunta y ofrece una pista concreta. Si pedimos la solución directa, conserva el modo socrático.
+
+
+El objetivo es que nosotros logremos:
+
+A. Redactar una descripción revisada y coherente de la variante de MLFQ considerada.
+
+B. Explicar qué cambios necesitaría XV6 para soportarla, indicando para cada uno su propósito, su relación con las reglas y la evidencia del código que lo justifica.
+
+C. Proponer escenarios para comprobar una futura implementación del algoritmo MLFQ en el sistema operativo XV6. Pídenos que expliquemos qué procesos participarían, qué harían, qué regla comprobaríamos y qué comportamiento esperaríamos observar. No nos entregues los escenarios resueltos. En esta tarea solo los describiremos; no vamos a programarlos ni ejecutarlos.
+
+
+
+Mantén el análisis dentro del alcance de una propuesta: no necesitamos implementar MLFQ ni construir un selector de planificadores. Ayúdanos a registrar las cuestiones que queden pendientes de investigación.
+
+Al finalizar, pídenos que redactemos nuestras conclusiones. Comprueba su consistencia mediante una última pregunta aplicada a un caso concreto, sin escribir por nosotros el reporte.
+
+Comienza con una pregunta que permita comprobar cómo entendemos una regla de nuestra descripción inicial de MLFQ. 
 ```
 
 ### 4.3 Descripción Revisada y Coherente de MLFQ para XV6
-* MLFQ es un planificador de procesos, el cuál tiene 3 colas de funcionamiento 0, 1 y 2, cada cola representa un nivel de prioridad de un proceso, cada proceso que entra se le asgina en la cola 2, de mayor prioridad, los procesos de la misma prioridad se ejecutan en orden de llegada, cada vez que el manager ejecuta todos los procesos de una cola pasa a la siguiente, cada proceso tiene maximo un quantum para ejecutarse, si al terminar ese quantum su ejecución no está terminada, pasa a la siguiente cola, hay un tiempo maximo S en el que todos los procesos suben a la cola de mayor prioridad, de esta forma los procesos de menor prioridad no se quedan esperando para siempre una nueva oportunidad de tener quantum para seguir con su ejecución, si un proceso libera la cpu antes de agotar el quantum (como esperar una entrada del teclado), no pierde prioridad, puede ser una puerta para procesos maliciosos que realenticen la ejecucion general de procesos en la cp, siempre se ejecuta el proceso con mayor prioridad, si esta ejecutando un proceso de una cola de menor prioridad, en cuanto dicho proceso agote su quantum, el planificador regresará a la cola de mayor prioridad.
-Regla 1: Si Prioridad(A) > Prioridad(B), corre A (no corre B).
-Regla 2: Si Prioridad(A) == Prioridad(B), corren en Round Robin (se turnan por orden de llegada usando el quantum asignado a esa cola).
-
-Regla 3: Qué pasa cuando un proceso llega por primera vez ("cada proceso nuevo que entra al sistema lo hace con la prioridad más alta") 
-Regla 4:
-4a: Si un proceso agota su quantum (asignación de tiempo) mientras está ejecutándose, su prioridad se reduce (baja una cola).
-4b: Si un proceso cede la CPU antes de agotar su quantum (por ejemplo, al esperar E/S con sleep()), mantiene su mismo nivel de prioridad. (Nota importante para su investigación más adelante: en la versión básica de MLFQ esto funciona bien, aunque abre la puerta a que un proceso malicioso haga E/S justo antes de acabar el quantum para "engañar" al planificador; eso es algo genial para dejar anotado en sus cuestiones pendientes o refinamientos).
-Regla 5: después de un período de tiempo S, todos los procesos del sistema (sin importar en qué cola estén) se mueven de vuelta a la cola de mayor prioridad (la Cola 2). 
+MLFQ es un planificador de procesos, el cuál tiene 3 colas de funcionamiento 0, 1 y 2, cada cola representa un nivel de prioridad de un proceso, cada proceso que entra se le asgina en la cola 2, de mayor prioridad, los procesos de la misma prioridad se ejecutan en orden de llegada, cada vez que el manager ejecuta todos los procesos de una cola pasa a la siguiente, cada proceso tiene maximo un quantum para ejecutarse, si al terminar ese quantum su ejecución no está terminada, pasa a la siguiente cola, hay un tiempo maximo S en el que todos los procesos suben a la cola de mayor prioridad, de esta forma los procesos de menor prioridad no se quedan esperando para siempre una nueva oportunidad de tener quantum para seguir con su ejecución, si un proceso libera la cpu antes de agotar el quantum (como esperar una entrada del teclado), no pierde prioridad, puede ser una puerta para procesos maliciosos que realenticen la ejecucion general de procesos en la cpu, siempre se ejecuta el proceso con mayor prioridad, si esta ejecutando un proceso de una cola de menor prioridad, en cuanto dicho proceso agote su quantum, el planificador regresará a la cola de mayor prioridad.
+* Regla 1: Si Prioridad(A) > Prioridad(B), corre A (no corre B).
+* Regla 2: Si Prioridad(A) == Prioridad(B), corren en Round Robin (se turnan por orden de llegada usando el quantum asignado a esa cola).
+* Regla 3: cada proceso nuevo que entra al sistema lo hace con la prioridad más alta (cola 2)
+* Regla 4:
+    * 4a: Si un proceso agota su quantum (asignación de tiempo) mientras está ejecutándose, su prioridad se reduce (baja una cola).
+    * 4b: Si un proceso cede la CPU antes de agotar su quantum (por ejemplo, al esperar E/S con sleep()), mantiene su mismo nivel de prioridad.
+* Regla 5: después de un período de tiempo S, todos los procesos del sistema (sin importar en qué cola estén) se mueven de vuelta a la cola de mayor prioridad (la Cola 2). 
 
 ### 4.4 Propuesta de Cambios Necesarios en XV6
 
 1. **Estructuras de datos de procesos ( `kernel/proc.h` - `struct proc` ):**
-   * **Cambio propuesto:** Agregar dos campos enteros dentro de `struct proc`: `priority` (para registrar el nivel o cola actual del proceso, siendo `0` la máxima prioridad) y `ticks` (contador de *ticks* de CPU consumidos dentro de su *quantum* vigente). Opcionalmente, añadir punteros o enlaces si se manejan colas explícitas por nivel en lugar de índices circulares.
+   * **Cambio propuesto:** Agregar dos campos enteros dentro de `struct proc`: `priority` (para registrar el nivel o cola actual del proceso, siendo `2` la máxima prioridad) y `ticks` (contador de *ticks* de CPU consumidos dentro de su *quantum* vigente). Opcionalmente, añadir punteros o enlaces si se manejan colas explícitas por nivel en lugar de índices circulares.
    * **Necesidad que atiende y justificación:** En la versión base de XV6 (`kernel/proc.h`, líneas 82–105), `struct proc` únicamente almacena el estado (`procstate`), su contexto y su candado (`p->lock`), sin ningún atributo que permita diferenciar jerarquías de prioridad ni medir cuánto tiempo de CPU lleva acumulado cada proceso.
 
 2. **Inicialización y reinicio de prioridades ( `kernel/proc.c` - `allocproc()`, `userinit()`, `fork()` ):**
-   * **Cambio propuesto:** Inicializar `p->priority = 0` (cola de mayor prioridad) y `p->ticks = 0` dentro de `allocproc()` cada vez que se reserva una ranura para un proceso nuevo (cubriendo tanto el proceso inicial creado por `userinit()` como los hijos generados con `fork()`). Asimismo, restablecer ambos campos a `0` al liberar la estructura en `freeproc()` y desvincular el proceso de cualquier cola al terminar en `exit()`.
+   * **Cambio propuesto:** Inicializar `p->priority = 2` (cola de mayor prioridad) y `p->ticks = 0` dentro de `allocproc()` cada vez que se reserva una ranura para un proceso nuevo (cubriendo tanto el proceso inicial creado por `userinit()` como los hijos generados con `fork()`). Asimismo, restablecer ambos campos a `0` al liberar la estructura en `freeproc()` y desvincular el proceso de cualquier cola al terminar en `exit()`.
    * **Necesidad que atiende y justificación:** Garantiza la Regla 1 de MLFQ (todo proceso nuevo ingresa por la cola más alta) y evita que futuros procesos que reutilicen entradas `UNUSED` de la tabla global `proc[NPROC]` hereden prioridades degradadas o *ticks* residuales.
 
 3. **Contabilidad de tiempo y degradación de prioridad ( `kernel/trap.c` - `usertrap()`, `kernel/proc.c` - `yield()` ):**
-   * **Cambio propuesto:** Ante cada interrupción del temporizador (`which_dev == 2` en `usertrap()` y `kerneltrap()` dentro de `kernel/trap.c`), incrementar `p->ticks` del proceso en ejecución y compararlo con el *quantum* asignado a su nivel actual. Si aún no alcanza el límite, continúa ejecutándose; si lo agota, se incrementa `p->priority` (bajando a la siguiente cola), se reinicia `p->ticks = 0` y se invoca `yield()` (`kernel/proc.c`) para ceder la CPU. En cambio, cuando el proceso cede voluntariamente la CPU por E/S mediante `sleep()`, se conserva intacto `p->priority` y se reinicia `p->ticks = 0`.
+   * **Cambio propuesto:** Ante cada interrupción del temporizador (`which_dev == 2` en `usertrap()` y `kerneltrap()` dentro de `kernel/trap.c`), incrementar `p->ticks` del proceso en ejecución y compararlo con el *quantum* asignado a su nivel actual. Si aún no alcanza el límite, continúa ejecutándose; si lo agota, se decrementa `p->priority` (bajando a la siguiente cola, hasta un mínimo de 0), se reinicia `p->ticks = 0` y se invoca `yield()` (`kernel/proc.c`) para ceder la CPU. En cambio, cuando el proceso cede voluntariamente la CPU por E/S mediante `sleep()`, se conserva intacto `p->priority` y se reinicia `p->ticks = 0`.
    * **Necesidad que atiende y justificación:** Permite aplicar las Reglas 3 y 4 del algoritmo apoyándose en los flujos ya existentes del núcleo: distingue entre un proceso intensivo en CPU que agota su *quantum* (degradado antes de `yield()`) y un proceso interactivo que se bloquea antes de tiempo (preservado en `sleep()` para mantener baja latencia al despertar con `wakeup()`).
 
 4. **Selección por prioridad y *Priority Boost* ( `kernel/proc.c` - `scheduler()` / `clockintr()` ):**
-   * **Cambio propuesto:** Modificar `scheduler()` en `kernel/proc.c` para buscar procesos `RUNNABLE` de forma jerárquica desde la cola de mayor prioridad hasta la inferior, rotando en orden FIFO/Round Robin dentro de un mismo nivel mediante colas separadas o un cursor circular por prioridad. Para el *priority boost* (Regla 5), `clockintr()` en `kernel/trap.c` lleva un contador global de *ticks* y, al cumplirse el período $S$, activa una bandera global (por ejemplo, `need_boost = 1`), delegando a `scheduler()` la tarea de adquirir cada `p->lock` de forma segura y devolver todos los procesos activos a `priority = 0` y `ticks = 0`.
+   * **Cambio propuesto:** Modificar `scheduler()` en `kernel/proc.c` para buscar procesos `RUNNABLE` de forma jerárquica desde la cola de mayor prioridad hasta la inferior, rotando en orden FIFO/Round Robin dentro de un mismo nivel mediante colas separadas o un cursor circular por prioridad. Para el *priority boost* (Regla 5), `clockintr()` en `kernel/trap.c` lleva un contador global de *ticks* y, al cumplirse el período $S$, activa una bandera global (por ejemplo, `need_boost = 1`), delegando a `scheduler()` la tarea de adquirir cada `p->lock` de forma segura y devolver todos los procesos activos a `priority = 2` y `ticks = 0`.
    * **Necesidad que atiende y justificación:** Reemplaza el recorrido lineal plano actual de `scheduler()` sobre `proc[NPROC]`, evitando el sesgo de favorecer siempre los primeros índices del arreglo. Además, separar la señalización del *boost* (bandera en `clockintr()`) de su ejecución (`scheduler()`) evita adquirir múltiples `p->lock` dentro de una interrupción de hardware bajo `tickslock`, previniendo *deadlocks* y eliminando la inanición (*starvation*) en las colas bajas.
 
 ### 4.5 Decisiones Pendientes de Investigación o Soporte Adicional
@@ -420,20 +437,44 @@ Antes de llevar esta propuesta a una implementación definitiva en XV6, quedan a
 ## 5. Evidencia del Aprendizaje con IA y Conclusiones
 
 ### 5.1 Identificación de la Herramienta de IA
-* **Servicio y modelo utilizado:** [Ej. Google Gemini / ChatGPT / etc., indicando versión si está disponible].
+* **Servicio y modelo utilizado:** Google Gemini
 
 ### 5.2 Fragmentos Seleccionados del Diálogo Socrático
-*(Incluir de 3 a 5 intercambios significativos que muestren hipótesis, comprobaciones o correcciones)*
 
-1. **Intercambio 1:**
-   * **Pregunta de la IA:** ...
-   * **Respuesta de los estudiantes:** ...
-2. **Intercambio 2:**
-   * **Pregunta de la IA:** ...
-   * **Respuesta de los estudiantes:** ...
-3. **Intercambio 3:**
-   * **Pregunta de la IA:** ...
-   * **Respuesta de los estudiantes:** ...
+* **Enlace a la conversación:** https://share.gemini.google/2hUrABrwhY7z
+
+#### Intercambio 1: Funcionamiento de Round Robin dentro de una misma cola (Regla 2)
+> **Tutor (Gemini):** Imaginen que en la Cola 2 (prioridad alta, quantum = 10 ms) llega el Proceso A y 1 ms después llega el Proceso B. Ambos necesitan 25 ms de CPU. Siguiendo Round Robin dentro de esa misma cola, cuando corre el Proceso A y agota sus 10 ms (y por lo tanto baja a la Cola 1), ¿quién corre inmediatamente después en el milisegundo 10? Y si después de bajar a la Cola 1 ambos procesos (A y B) están ahí sin que haya nadie en la Cola 2, ¿cómo se van turnando entre ellos usando el quantum de la Cola 1?
+
+**Estudiantes:** correría inmediatamente el proceso B, despues el planificador ejecuta los procesos de la cola 1 lo mismo en orden de llegada
+
+---
+
+#### Intercambio 2: Preservación de prioridad ante bloqueos de E/S (Regla 4)
+> **Tutor (Gemini):** Piensen primero en un proceso interactivo —por ejemplo, el shell (sh) esperando a que escriban un comando o un editor de texto— que está en la Cola 2 (quantum = 10 ms). El proceso usa la CPU apenas 2 ms para mostrar un carácter en pantalla y luego llama a sleep() porque necesita esperar una tecla del teclado (Entrada/Salida). Si la regla fuera simplemente "al terminar su turno en la CPU baja de prioridad", este proceso interactivo terminaría degradado hasta la cola más baja por hacer pausas de E/S, volviendo lento todo el sistema. ¿Qué debe ocurrir con la prioridad de un proceso cuando cede la CPU voluntariamente antes de agotar su quantum? (Pista: recuerden cuál es la diferencia entre agotar el tiempo de ejecución vs. cederlo antes).
+
+**Estudiantes:** Debería de tener la misma prioridad, vuelve a la cola 2, y entra en cpu el siguiente proceso que este pendiente
+
+---
+
+#### Intercambio 3: Prevención de inanición mediante *Priority Boost* (Regla 5)
+> **Tutor (Gemini):** Imaginen una sala de urgencias en un hospital donde siempre llegan casos graves (alta prioridad) y los casos leves (baja prioridad) llevan 5 horas esperando sin ser atendidos. Si las reglas actuales solo permiten bajar de prioridad o quedarse igual, ¿qué es lo único que les falta hacer con la prioridad de esos procesos que llevan mucho tiempo abajo? Piensen en un temporizador global del sistema (por ejemplo, cada cierto periodo S, digamos cada 100 ticks o cada segundo): ¿a qué cola debería mover el planificador a TODOS los procesos del sistema cuando se cumple ese tiempo S?
+
+**Estudiantes:** seria algo como que cada cierto tiempo S mueve todos los procesos a la cola 2, de modo que se le de qantum a los procesos pendientes antes de dar cpu a los que van llegando
+
+---
+
+#### Intercambio 4: Redacción revisada del algoritmo MLFQ
+> **Tutor (Gemini):** ¿Cómo redactarían ahora su descripción revisada y coherente de MLFQ integrando estas 5 reglas en un párrafo o lista clara con sus propias palabras? (Después de leer su redacción, la pondremos a prueba con un mini-ejemplo numérico para verificar que la aplican sin ambigüedades).
+
+**Estudiantes:** MLFQ es un planificador de procesos, el cuál tiene 3 colas de funcionamiento 0, 1 y 2, cada cola representa un nivel de prioridad de un proceso, cada proceso que entra se le asgina en la cola 2, de mayor prioridad, los procesos de la misma prioridad se ejecutan en orden de llegada, cada vez que el manager ejecuta todos los procesos de una cola pasa a la siguiente, cada proceso tiene maximo un quantum para ejecutarse, si al terminar ese quantum su ejecución no está terminada, pasa a la siguiente cola, hay un tiempo maximo S en el que todos los procesos suben a la cola de mayor prioridad, de esta forma los procesos de menor prioridad no se quedan esperando para siempre una nueva oportunidad de tener quantum para seguir con su ejecución, si un proceso libera la cpu antes de agotar el quantum (como esperar una entrada del teclado), no pierde prioridad, puede ser una puerta para procesos maliciosos que realenticen la ejecucion general de procesos en la cpu
+
+---
+
+#### Intercambio 5: Cuestiones pendientes de investigación en XV6 (Escalabilidad multi-CPU)
+> **Tutor (Gemini):** Para que esta sección quede aterrizada directamente a la arquitectura de XV6 que ustedes analizaron: si miramos el hardware simulado en QEMU y el código actual de XV6 que revisaron (Makefile con CPUS, proc[NPROC] en kernel/proc.h, o el manejo de interrupciones en kernel/trap.c), ¿qué otras 2 o 3 decisiones técnicas o de diseño en XV6 ven que quedarían abiertas y necesitarían pruebas o investigación antes de escribir código? (Piensen, por ejemplo, en cómo se representarían las colas en memoria o qué pasaría si cambiaran el número de CPUs).
+
+**Estudiantes:** en el tema de varias cpus, podria usarlo de varias formas, dos cpus con grupos de colas independientes, o podria poner una cpu por cola, una cpu que ayude con los procesos de la cola 2, otra que ayude con los procesos de la cola 1, o incluso dos conjuntos de colas, y que sean interconectados, los procesos de la cola 2 del cpu 1, al acabar su quantum van a la cola 2 del cpu 2 y asi bajan en escalera
 
 ### 5.3 Conclusiones Generales y Retroalimentación de la IA
 * **Conclusiones del equipo:** [Redactar conclusiones sobre las diferencias entre Round-Robin en XV6 y MLFQ, y las implicaciones arquitectónicas de incorporarlo].
