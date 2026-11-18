@@ -324,27 +324,52 @@ qemu: check-qemu-version $K/kernel fs.img
 
 ### 4.2 Prompt 1 Utilizado para la Interacción Socrática
 ```text
-[Pegar aquí exactamente el Prompt 1 completo enviado a la IA, incluyendo la descripción inicial de MLFQ y la síntesis del planificador original de XV6]
+Actúa como tutor socrático de una pareja de estudiantes de cuarto semestre de Ingeniería de Sistemas. Conocemos C++ y hemos comenzado a explorar XV6 para RISC-V.
+Queremos identificar y justificar qué se necesitaría para incorporar MLFQ a XV6. En esta entrega no vamos a implementarlo.
+
+Nuestra descripción inicial del algoritmo, escrita antes de esta conversación:
+MLFQ es un planificador de procesos que queremos analizar para incorporar en el sistema operativo XV6. Se basa en varias colas de procesos organizadas por niveles de prioridad, en las que al proceso con mayor prioridad se le asigna un tiempo de ejecución (quantum). Al agotar ese tiempo de ejecución, el proceso pierde prioridad (baja a una cola inferior) y da paso al siguiente proceso. Además, cada proceso nuevo que entra al sistema lo hace con la prioridad más alta.
+
+Dudas identificadas:
+1. ¿Cómo funciona exactamente Round Robin dentro de las colas de MLFQ?
+2. Si entran procesos nuevos o interactivos constantemente en la cola más alta, ¿en qué momento se ejecutan los procesos que ya agotaron su tiempo de ejecución y bajaron de prioridad sin haber terminado?
+3. ¿Cómo se mide en XV6 el tiempo que lleva ejecutándose un proceso y cuántas colas o qué tamaño de quantum deberíamos usar?
+
+Lo que averiguamos del planificador original y de su incorporación al sistema compilado:
+- Política por defecto: XV6 utiliza Round Robin (RR) sin prioridades sobre una única tabla global `proc[NPROC]` en `kernel/proc.h` (líneas 82–105), donde `enum procstate` (línea 79) define los estados `UNUSED`, `USED`, `SLEEPING`, `RUNNABLE`, `RUNNING` y `ZOMBIE`, sin campos de prioridad ni contadores de consumo de CPU.
+- Selección de procesos: En `kernel/proc.c` (líneas 428–470), `scheduler(void)` ejecuta un bucle infinito recorriendo linealmente `proc[NPROC]`, adquiere `p->lock`, selecciona el siguiente proceso `RUNNABLE`, lo marca `RUNNING`, asigna `c->proc = p` y realiza el cambio de contexto mediante `swtch(&c->context, &p->context)` (`kernel/swtch.S`, líneas 8–40).
+- Cesión y recuperación de CPU: En `kernel/start.c` (`timerinit()`, líneas 55–66), el temporizador hardware se configura sumando `1000000` ciclos (`w_stimecmp(r_time() + 1000000)`), recargado en cada interrupción por `clockintr()` en `kernel/trap.c`. Al vencer el intervalo (`which_dev == 2`), `usertrap()` y `kerneltrap()` (`kernel/trap.c`, líneas 85–86 y 157–158) llaman a `yield()` (`kernel/proc.c`, líneas 500–508), que pasa el proceso a `RUNNABLE` e invoca `sched()` (líneas 479–497). Para E/S o eventos, `sleep()` (líneas 561–572) lo pasa a `SLEEPING` y `wakeup()` (líneas 575–595) lo devuelve a `RUNNABLE`.
+- Compilación: En el `Makefile`, `OBJS` incluye `$K/proc.o`, `$K/swtch.o` y `$K/trap.o`, que se compilan con `riscv64-linux-gnu-gcc` (`-ffreestanding -nostdlib`) y se enlazan con `ld` usando `kernel/kernel.ld` para producir el binario `kernel/kernel`, ejecutado en QEMU con `-smp $(CPUS)` (configurado en `CPUS=1`).
+
+Reglas de interacción:
+1. Formula una sola pregunta principal por turno y espera nuestra respuesta. No presentes una lista completa de cambios ni una arquitectura resuelta.
+2. Empieza examinando nuestra descripción de MLFQ. Ayúdanos a detectar reglas ambiguas, ausentes o contradictorias. No sustituyas nuestra descripción por una versión terminada ni elijas silenciosamente una variante del algoritmo.
+3. Pídenos que propongamos y justifiquemos las decisiones que faltan. Después, ayúdanos a comprobarlas con ejemplos pequeños de procesos y decisiones de planificación que nosotros debamos resolver.
+4. Guíanos para relacionar cada regla con XV6. Antes de sugerir una modificación, pregúntanos qué comportamiento necesitamos y qué evidencia del código respalda nuestra propuesta.
+5. No supongas que tienes acceso a nuestro repositorio. Pide los fragmentos necesarios y distingue lo observado de lo que todavía sea una hipótesis. No inventes archivos, funciones o comportamientos de nuestra versión.
+6. No entregues código de implementación, ni escribas parches completos; enfócate únicamente en el diseño conceptual y su justificación.
 ```
 
 ### 4.3 Descripción Revisada y Coherente de MLFQ para XV6
 * [Redactar la versión refinada del algoritmo tras la interacción socrática, definiendo la variante específica y los parámetros propuestos].
 
 ### 4.4 Propuesta de Cambios Necesarios en XV6
-*(Sin código de implementación; justificando qué necesidad atiende cada cambio y qué evidencia del código lo respalda)*
 
-1. **Estructuras de datos de procesos (`kernel/proc.h` - `struct proc`):**
-   * **Cambio propuesto:** [Ej. Agregar campos para prioridad actual, ticks consumidos en el nivel actual, etc.].
-   * **Necesidad que atiende y justificación:** [Explicar].
-2. **Inicialización y reinicio de prioridades (`kernel/proc.c` - `allocproc()`, `userinit()`, `fork()`):**
-   * **Cambio propuesto:** [Explicar].
-   * **Necesidad que atiende y justificación:** [Explicar].
-3. **Contabilidad de tiempo y degradación de prioridad (`kernel/trap.c` - `usertrap()`, `kernel/proc.c` - `yield()`):**
-   * **Cambio propuesto:** [Explicar].
-   * **Necesidad que atiende y justificación:** [Explicar].
-4. **Selección por prioridad y *Priority Boost* (`kernel/proc.c` - `scheduler()` / `clockintr()`):**
-   * **Cambio propuesto:** [Explicar].
-   * **Necesidad que atiende y justificación:** [Explicar].
+1. **Estructuras de datos de procesos ( `kernel/proc.h` - `struct proc` ):**
+   * **Cambio propuesto:** Agregar dos campos enteros dentro de `struct proc`: `priority` (para registrar el nivel o cola actual del proceso, siendo `0` la máxima prioridad) y `ticks` (contador de *ticks* de CPU consumidos dentro de su *quantum* vigente). Opcionalmente, añadir punteros o enlaces si se manejan colas explícitas por nivel en lugar de índices circulares.
+   * **Necesidad que atiende y justificación:** En la versión base de XV6 (`kernel/proc.h`, líneas 82–105), `struct proc` únicamente almacena el estado (`procstate`), su contexto y su candado (`p->lock`), sin ningún atributo que permita diferenciar jerarquías de prioridad ni medir cuánto tiempo de CPU lleva acumulado cada proceso.
+
+2. **Inicialización y reinicio de prioridades ( `kernel/proc.c` - `allocproc()`, `userinit()`, `fork()` ):**
+   * **Cambio propuesto:** Inicializar `p->priority = 0` (cola de mayor prioridad) y `p->ticks = 0` dentro de `allocproc()` cada vez que se reserva una ranura para un proceso nuevo (cubriendo tanto el proceso inicial creado por `userinit()` como los hijos generados con `fork()`). Asimismo, restablecer ambos campos a `0` al liberar la estructura en `freeproc()` y desvincular el proceso de cualquier cola al terminar en `exit()`.
+   * **Necesidad que atiende y justificación:** Garantiza la Regla 1 de MLFQ (todo proceso nuevo ingresa por la cola más alta) y evita que futuros procesos que reutilicen entradas `UNUSED` de la tabla global `proc[NPROC]` hereden prioridades degradadas o *ticks* residuales.
+
+3. **Contabilidad de tiempo y degradación de prioridad ( `kernel/trap.c` - `usertrap()`, `kernel/proc.c` - `yield()` ):**
+   * **Cambio propuesto:** Ante cada interrupción del temporizador (`which_dev == 2` en `usertrap()` y `kerneltrap()` dentro de `kernel/trap.c`), incrementar `p->ticks` del proceso en ejecución y compararlo con el *quantum* asignado a su nivel actual. Si aún no alcanza el límite, continúa ejecutándose; si lo agota, se incrementa `p->priority` (bajando a la siguiente cola), se reinicia `p->ticks = 0` y se invoca `yield()` (`kernel/proc.c`) para ceder la CPU. En cambio, cuando el proceso cede voluntariamente la CPU por E/S mediante `sleep()`, se conserva intacto `p->priority` y se reinicia `p->ticks = 0`.
+   * **Necesidad que atiende y justificación:** Permite aplicar las Reglas 3 y 4 del algoritmo apoyándose en los flujos ya existentes del núcleo: distingue entre un proceso intensivo en CPU que agota su *quantum* (degradado antes de `yield()`) y un proceso interactivo que se bloquea antes de tiempo (preservado en `sleep()` para mantener baja latencia al despertar con `wakeup()`).
+
+4. **Selección por prioridad y *Priority Boost* ( `kernel/proc.c` - `scheduler()` / `clockintr()` ):**
+   * **Cambio propuesto:** Modificar `scheduler()` en `kernel/proc.c` para buscar procesos `RUNNABLE` de forma jerárquica desde la cola de mayor prioridad hasta la inferior, rotando en orden FIFO/Round Robin dentro de un mismo nivel mediante colas separadas o un cursor circular por prioridad. Para el *priority boost* (Regla 5), `clockintr()` en `kernel/trap.c` lleva un contador global de *ticks* y, al cumplirse el período $S$, activa una bandera global (por ejemplo, `need_boost = 1`), delegando a `scheduler()` la tarea de adquirir cada `p->lock` de forma segura y devolver todos los procesos activos a `priority = 0` y `ticks = 0`.
+   * **Necesidad que atiende y justificación:** Reemplaza el recorrido lineal plano actual de `scheduler()` sobre `proc[NPROC]`, evitando el sesgo de favorecer siempre los primeros índices del arreglo. Además, separar la señalización del *boost* (bandera en `clockintr()`) de su ejecución (`scheduler()`) evita adquirir múltiples `p->lock` dentro de una interrupción de hardware bajo `tickslock`, previniendo *deadlocks* y eliminando la inanición (*starvation*) en las colas bajas.
 
 ### 4.5 Decisiones Pendientes de Investigación o Soporte Adicional
 * [Listar aspectos técnicos que requerirían validación experimental o investigación adicional antes de implementar, como sincronización con *spinlocks* (`p->lock`), elección óptima del periodo $S$ para evitar inanición sin degradar la interactividad, y manejo de procesos que hacen *sleep* frecuente].
